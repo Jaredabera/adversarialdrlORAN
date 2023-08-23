@@ -1,5 +1,6 @@
 # adversarial_drl_ORAN
 The code in this repository has three main modules: a) Base_line_Agent for original model    b) Surrogate FGSM attack model and  c) Resource Allocation Saboteur- Policy Infiltrator model
+# it loads data, samples it to simulate real-time data, feeds it to agents, executes actions, and repeats the process.
 The code defines several functions for loading and preprocessing data from CSV files into Pandas DataFrames:
 
 entire_dataset_from_single_file() loads a single CSV file into a DataFrame. It allows selecting specific columns, scaling the 'dl_buffer' column, removing rows with 0 requested PRBs, and adding a 'ratio_granted_req' column.
