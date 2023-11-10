@@ -160,7 +160,7 @@ def calculate_reward(observation):
     reward_metric = slice_profiles[i]['reward_metric']  # Use slice_key here
     reward_index = metric_dict[reward_metric]
     return observation[0, reward_index]
-def apply_adversarial_attack(data, epsilon=10):
+def apply_adversarial_attack(data, epsilon=0.01):
     # Apply a noise-based adversarial perturbation
     perturbation = np.random.uniform(-epsilon, epsilon, size=data.shape)
     perturbed_data = data + perturbation
@@ -253,7 +253,7 @@ if __name__ == '__main__':
         tf.config.experimental.set_memory_growth(gpu_devices[0], True)
         print("Num GPUs Available outside environments: ", len(gpu_devices))
 
-    # load policy, these are the folder where saved_model.pb is stored
+    # load policy, these are the folders where saved_model.pb is stored
     drl_agents = [tf.saved_model.load(embb_policy_filename),
                   tf.saved_model.load(mtc_policy_filename),
                   tf.saved_model.load(urllc_policy_filename)]
@@ -302,7 +302,7 @@ if __name__ == '__main__':
                                              metric_dict=metric_dict,
                                              metric_list=metric_list_for_agents,
                                              n_entries_per_slice=n_entries_for_autoencoder)
-        epsilon = 10  # Initial perturbation magnitude
+        epsilon = 0.01  # Initial perturbation magnitude
         max_iterations = 100  # Maximum number of attack iterations
         threshold_reward_increase = 1.1  # Threshold for overtaking reward
 
