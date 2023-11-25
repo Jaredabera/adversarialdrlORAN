@@ -1,3 +1,13 @@
+# Acknowledgments
+
+We would like to express our gratitude to the creators of the Colosseum O-RAN COMMAG Dataset, as our work, titled "Unmasking Vulnerabilities: Adversarial Attacks against DRL-based Resource Allocation in O-RAN," is built upon their initial research. The dataset utilized in our study originates from the work presented in the paper:
+
+> L. Bonati, S. D'Oro, M. Polese, S. Basagni, T. Melodia, "Intelligence and Learning in O-RAN for Data-driven NextG Cellular Networks," IEEE Communications Magazine, vol. 59, no. 10, pp. 21–27, October 2021.
+
+We want to acknowledge and emphasize the importance of their contributions, as our research leverages the Colosseum O-RAN COMMAG Dataset and follows the experimental settings outlined in their publication. While our focus lies in exploring Adversarial Attacks against DRL-based Resource Allocation in O-RAN, the foundation laid by the initial creators has been instrumental in shaping the direction of our work.
+
+If you plan to use the Colosseum O-RAN COMMAG Dataset for your research, we kindly request citing the original paper mentioned above to acknowledge the efforts of the dataset creators.
+
 # Colosseum O-RAN COMMAG Dataset
 This repository contains the dataset for the paper L. Bonati, S. D'Oro, M. Polese, S. Basagni, T. Melodia, "Intelligence and Learning in O-RAN for Data-driven NextG Cellular Networks," IEEE Communications Magazine, vol. 59, no. 10, pp. 21–27, October 2021. Please cite the paper if you plan to use it in your publication.
 
