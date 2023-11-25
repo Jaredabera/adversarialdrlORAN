@@ -9,8 +9,7 @@ We want to acknowledge and emphasize the importance of their contributions, as o
 If you plan to use the Colosseum O-RAN COMMAG Dataset for your research, we kindly request citing the original paper mentioned above to acknowledge the efforts of the dataset creators.
 
 # Colosseum O-RAN COMMAG Dataset
-This repository contains the dataset for the paper L. Bonati, S. D'Oro, M. Polese, S. Basagni, T. Melodia, "Intelligence and Learning in O-RAN for Data-driven NextG Cellular Networks," IEEE Communications Magazine, vol. 59, no. 10, pp. 21–27, October 2021. Please cite the paper if you plan to use it in your publication.
-
+The Colosseum O-RAN COMMAG Dataset is a dataset for evaluating data-driven decision-making in Open RAN (O-RAN) networks. It was collected using the Colosseum testbed, which is a large-scale wireless network emulator that can be used to simulate different types of O-RAN networks.
 ## Experiment setup
 - Number of Base Stations (BSs): 4
 - Channel bandwidth: 3 MHz (15 Physical Resource Blocks (PRBs))
