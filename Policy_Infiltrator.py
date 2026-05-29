@@ -143,7 +143,6 @@ def split_data(slice_profiles=None,
     return metrics, prbs, rewards
 
 # Used to generate the input to the DRL agent. It returns a TimeStep that contains (step_type, reward, discount, observations)
-# Used to generate the input to the DRL agent. It returns a TimeStep that contains (step_type, reward, discount, observations)
 def generate_timestep_for_policy(obs_tmp=None):
     step_type = tf.convert_to_tensor(
         [0], dtype=tf.int32, name='step_type')
@@ -155,16 +154,11 @@ def generate_timestep_for_policy(obs_tmp=None):
         [obs_tmp], dtype=tf.float32, name='observations')
     return ts.TimeStep(step_type, reward, discount, observations)
 
-# Function to calculate the reward
-def calculate_reward(observation):
-    reward_metric = slice_profiles[i]['reward_metric']  # Use slice_key here
-    reward_index = metric_dict[reward_metric]
-    return observation[0, reward_index]
 def apply_adversarial_attack(data, epsilon=0.01):
-    # Apply a noise-based adversarial perturbation
+    """Apply a noise-based adversarial perturbation"""
     perturbation = np.random.uniform(-epsilon, epsilon, size=data.shape)
     perturbed_data = data + perturbation
-    return perturbed_data
+    return perturbed_data.astype('float32')
 
 if __name__ == '__main__':
 
@@ -287,6 +281,7 @@ if __name__ == '__main__':
     rewards_dict = {}  # Initialize rewards_dict outside the loop
     for profile in slice_profiles.keys():
         rewards_dict[profile] = []
+
     while True:
         policies = list()
 
@@ -306,13 +301,13 @@ if __name__ == '__main__':
         max_iterations = 100  # Maximum number of attack iterations
         threshold_reward_increase = 1.1  # Threshold for overtaking reward
 
-        for i in range(len(slice_profiles)):
+        for i, profile in enumerate(slice_profiles.keys()):
             if len(data_tmp[i]) > 0:
                 for row in data_tmp[i]:
                     row[0] /= 100000
 
                 # Apply the adversarial attack to the observations
-                perturbed_data = apply_adversarial_attack(data_tmp[i])  # You need to implement this function
+                perturbed_data = apply_adversarial_attack(data_tmp[i])
                 
                 logging.info('Testing iteration ' + str(i))
                 logging.info('Data received from DU (dl_buffer [bytes], tx_brate downlink [Mbps], ratio_granted_req): ')
@@ -336,7 +331,7 @@ if __name__ == '__main__':
                 # append previous policy
                 policies.append(previous_policy[i])
                 logging.info('Using previous action ' + str(previous_policy[i]) + ' for slice profile ' + str(i))
-            print()
+
         # build message to send policies to the DU
         msg = ','.join([str(x) for x in policies])
         logging.info('Sending this message to the DU: ' + msg)
