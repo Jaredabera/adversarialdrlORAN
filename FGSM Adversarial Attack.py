@@ -160,22 +160,29 @@ def generate_timestep_for_policy(obs_tmp=None):
 
 # Encapsulated the epsilon code block in a function
 def apply_epsilon_perturbation(obs_tmp, i, drl_agents, epsilon):
-    # Apply fgsm attack on autoencoder's output
-    obs_tmp_tensor = tf.convert_to_tensor(obs_tmp)
+    # Apply fgsm attack on observations
+    obs_tmp_tensor = tf.Variable(obs_tmp, trainable=True)
     with tf.GradientTape() as tape:
-        tape.watch(obs_tmp)  # Watch the observations
-        time_step = generate_timestep_for_policy(obs_tmp)
-        reward = drl_agents[i].compute_reward(time_step)
+        tape.watch(obs_tmp_tensor)  # Watch the observations tensor
+        time_step = generate_timestep_for_policy(obs_tmp_tensor)
+        # Use the policy to get an action and compute a scalar loss
+        action = drl_agents[i].action(time_step)
+        # Use action to compute a loss (sum of action values as a proxy)
+        reward = tf.reduce_sum(tf.cast(action, tf.float32))
     
-    gradient = tape.gradient(reward, obs_tmp)
-    perturbation = epsilon * tf.sign(gradient)
-    adversarial_obs = obs_tmp + perturbation
+    gradient = tape.gradient(reward, obs_tmp_tensor)
+    if gradient is not None:
+        perturbation = epsilon * tf.sign(gradient)
+        adversarial_obs = obs_tmp + perturbation
+    else:
+        adversarial_obs = obs_tmp
 
     # Pass adversarial observation through DRL agent
     adversarial_time_step = generate_timestep_for_policy(adversarial_obs)
     adversarial_action = drl_agents[i].action(adversarial_time_step)
 
     return adversarial_action
+
 if __name__ == '__main__':
 
     # Column names in the srsLTE CSV dataset
@@ -336,13 +343,13 @@ if __name__ == '__main__':
 
                 logging.info('Slice ' + str(i) + ': Action is ' + str(action[0][0][0].numpy()) + ' Reward is: ' + str(
                     reward_mean))
-   
+    
             else:
                 # append previous policy
                 policies.append(previous_policy[i])
                 logging.info('Using previous action ' + str(previous_policy[i]) + ' for slice profile ' + str(i))
-
-                # Call the function to execute the epsilon code block
+                
+                # Call the function to execute the FGSM attack
                 adversarial_action = apply_epsilon_perturbation(obs_tmp, i, drl_agents, epsilon)
                 policies.append(adversarial_action[0][0][0].numpy())
 
