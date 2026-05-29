@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import tensorflow as tf
 from tf_agents.trajectories import time_step as ts
+from tf_agents.policies import policy_saver
 
 import absl
 import time
@@ -154,11 +155,160 @@ def generate_timestep_for_policy(obs_tmp=None):
         [obs_tmp], dtype=tf.float32, name='observations')
     return ts.TimeStep(step_type, reward, discount, observations)
 
-def apply_adversarial_attack(data, epsilon=0.01):
-    """Apply a noise-based adversarial perturbation"""
-    perturbation = np.random.uniform(-epsilon, epsilon, size=data.shape)
-    perturbed_data = data + perturbation
-    return perturbed_data.astype('float32')
+
+def apply_ppo_policy_infiltration_attack(obs_tmp, agent, epsilon=0.05, alpha=0.01, num_iterations=50):
+    """
+    PPO-specific Policy Infiltration Attack (PIA)
+    
+    Targets PPO's key vulnerabilities:
+    1. Exploits clipped probability ratio mechanism (PPO's main defense)
+    2. Manipulates actor-critic advantage computation
+    3. Crafts perturbations to maximize divergence from trained policy
+    4. Violates trust region constraints through gradient-based optimization
+    
+    Args:
+        obs_tmp: Original observation (numpy array)
+        agent: PPO policy agent
+        epsilon: Maximum perturbation magnitude
+        alpha: Step size for gradient ascent
+        num_iterations: Number of attack iterations
+    
+    Returns:
+        adversarial_action: Action from perturbed observation
+        attack_success: Boolean indicating if attack exceeded trust region
+        divergence: KL divergence between original and attacked policy distributions
+    """
+    
+    # Initialize perturbation
+    perturbation = tf.Variable(tf.zeros_like(obs_tmp, dtype=tf.float32), trainable=True)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=alpha)
+    
+    # Store metrics
+    attack_metrics = {
+        'max_divergence': 0.0,
+        'max_prob_ratio': 0.0,
+        'iterations_to_break_trust_region': -1,
+        'clip_threshold': 0.2  # PPO clipping parameter (typically 0.1-0.2)
+    }
+    
+    # Get original policy distribution
+    original_timestep = generate_timestep_for_policy(obs_tmp)
+    
+    try:
+        original_dist = agent.actor_net(original_timestep.observation)
+        if hasattr(original_dist, 'mean'):
+            original_action_mean = original_dist.mean()
+            original_action_std = original_dist.stddev()
+        else:
+            original_action_mean = original_dist
+            original_action_std = tf.ones_like(original_dist) * 0.1
+    except:
+        logging.warning("Could not extract original policy distribution")
+        original_action_mean = None
+        original_action_std = None
+    
+    # Iterative gradient-based attack
+    for iteration in range(num_iterations):
+        with tf.GradientTape() as tape:
+            tape.watch(perturbation)
+            
+            # Create adversarial observation
+            adversarial_obs = obs_tmp + perturbation
+            
+            # Clip to valid observation space
+            adversarial_obs = tf.clip_by_value(adversarial_obs, -10.0, 10.0)
+            
+            # Create timestep for perturbed observation
+            adversarial_timestep = generate_timestep_for_policy(adversarial_obs)
+            
+            # Get attacked policy distribution
+            try:
+                attacked_dist = agent.actor_net(adversarial_timestep.observation)
+                if hasattr(attacked_dist, 'mean'):
+                    attacked_action_mean = attacked_dist.mean()
+                    attacked_action_std = attacked_dist.stddev()
+                else:
+                    attacked_action_mean = attacked_dist
+                    attacked_action_std = tf.ones_like(attacked_dist) * 0.1
+            except:
+                logging.warning(f"Could not extract attacked policy distribution at iteration {iteration}")
+                continue
+            
+            # ATTACK OBJECTIVE 1: Maximize divergence from original policy
+            # KL divergence between original and attacked distributions
+            if original_action_mean is not None:
+                # KL(original || attacked) = 0.5 * sum(((mu1-mu2)^2 + sig1^2 + sig2^2 - 2*sig1*sig2) / sig2^2)
+                mean_diff = original_action_mean - attacked_action_mean
+                var_ratio = (original_action_std ** 2 + attacked_action_std ** 2) / (2 * (attacked_action_std ** 2) + 1e-8)
+                kl_divergence = 0.5 * tf.reduce_mean(
+                    (mean_diff ** 2) / (attacked_action_std ** 2 + 1e-8) + var_ratio - 1.0
+                )
+            else:
+                kl_divergence = 0.0
+            
+            # ATTACK OBJECTIVE 2: Exploit probability ratio clipping
+            # Try to maximize the ratio that would exceed PPO's clipping threshold
+            action_distance = tf.reduce_mean(tf.abs(attacked_action_mean - original_action_mean))
+            
+            # ATTACK OBJECTIVE 3: Maximize advantage function exploitation
+            # Craft perturbations that lead to actions with higher predicted value
+            try:
+                attacked_value = agent.value_net(adversarial_timestep.observation)
+            except:
+                attacked_value = tf.constant(0.0)
+            
+            # Composite attack loss: maximize divergence and advantage mismatch
+            attack_loss = -(kl_divergence + action_distance + tf.reduce_mean(attacked_value) * 0.1)
+            
+        # Compute gradients w.r.t. perturbation
+        gradients = tape.gradient(attack_loss, perturbation)
+        
+        if gradients is not None:
+            # Apply gradient ascent to maximize attack loss
+            optimizer.apply_gradients([(gradients, perturbation)])
+            
+            # Project perturbation to epsilon-ball
+            perturbation_norm = tf.norm(perturbation)
+            if perturbation_norm > epsilon:
+                perturbation.assign(perturbation * (epsilon / (perturbation_norm + 1e-8)))
+            
+            # Track metrics
+            if kl_divergence > attack_metrics['max_divergence']:
+                attack_metrics['max_divergence'] = float(kl_divergence.numpy())
+            
+            prob_ratio = tf.exp(-kl_divergence)  # Approximation of probability ratio
+            if float(prob_ratio.numpy()) > attack_metrics['max_prob_ratio']:
+                attack_metrics['max_prob_ratio'] = float(prob_ratio.numpy())
+            
+            # Check if trust region is violated (ratio > 1 + clip_threshold)
+            if float(prob_ratio.numpy()) > (1.0 + attack_metrics['clip_threshold']) and attack_metrics['iterations_to_break_trust_region'] == -1:
+                attack_metrics['iterations_to_break_trust_region'] = iteration
+        
+        if (iteration + 1) % 10 == 0:
+            logging.debug(f"PIA Iteration {iteration + 1}/{num_iterations} - KL Div: {kl_divergence:.6f}, Prob Ratio: {float(prob_ratio.numpy()):.6f}")
+    
+    # Generate final adversarial action
+    final_adversarial_obs = obs_tmp + perturbation
+    final_adversarial_obs = tf.clip_by_value(final_adversarial_obs, -10.0, 10.0)
+    final_timestep = generate_timestep_for_policy(final_adversarial_obs)
+    
+    try:
+        adversarial_action = agent.action(final_timestep)
+    except:
+        # Fallback to policy network
+        adversarial_action = agent.actor_net(final_timestep.observation)
+    
+    # Determine attack success
+    attack_success = attack_metrics['iterations_to_break_trust_region'] != -1
+    
+    logging.info(f"PIA Attack Metrics:")
+    logging.info(f"  Max KL Divergence: {attack_metrics['max_divergence']:.6f}")
+    logging.info(f"  Max Prob Ratio: {attack_metrics['max_prob_ratio']:.6f}")
+    logging.info(f"  Trust Region Broken: {attack_success} (at iteration {attack_metrics['iterations_to_break_trust_region']})")
+    logging.info(f"  Perturbation Norm: {float(tf.norm(perturbation).numpy()):.6f}")
+    
+    return adversarial_action, attack_success, attack_metrics
+
 
 if __name__ == '__main__':
 
@@ -278,12 +428,20 @@ if __name__ == '__main__':
         previous_policy[val['slice_id']] = default_policy
 
     previous_metrics = ''
-    rewards_dict = {}  # Initialize rewards_dict outside the loop
-    for profile in slice_profiles.keys():
-        rewards_dict[profile] = []
+    
+    # Track PIA attack success metrics
+    pia_metrics = {
+        'total_attacks': 0,
+        'successful_attacks': 0,
+        'avg_kl_divergence': 0.0,
+        'avg_prob_ratio': 0.0,
+        'success_rate': 0.0
+    }
 
     while True:
         policies = list()
+        clean_actions = list()
+        attacked_actions = list()
 
         # This is where data comes from the DUs.
         # As an example, we extract data from the static dataset.
@@ -297,45 +455,82 @@ if __name__ == '__main__':
                                              metric_dict=metric_dict,
                                              metric_list=metric_list_for_agents,
                                              n_entries_per_slice=n_entries_for_autoencoder)
-        epsilon = 0.01  # Initial perturbation magnitude
-        max_iterations = 100  # Maximum number of attack iterations
-        threshold_reward_increase = 1.1  # Threshold for overtaking reward
+        
+        # PIA Attack Parameters
+        epsilon_pia = 0.05  # Maximum perturbation magnitude (PPO trust region)
+        alpha_pia = 0.01    # Gradient step size
+        num_iterations_pia = 50  # Attack iterations
 
         for i, profile in enumerate(slice_profiles.keys()):
             if len(data_tmp[i]) > 0:
                 for row in data_tmp[i]:
                     row[0] /= 100000
 
-                # Apply the adversarial attack to the observations
-                perturbed_data = apply_adversarial_attack(data_tmp[i])
+                logging.info('='*80)
+                logging.info(f'Testing PIA on Slice {i} ({profile})')
+                logging.info('='*80)
                 
-                logging.info('Testing iteration ' + str(i))
                 logging.info('Data received from DU (dl_buffer [bytes], tx_brate downlink [Mbps], ratio_granted_req): ')
-                logging.info(np.expand_dims(perturbed_data, axis=0))
+                logging.info(np.expand_dims(data_tmp[i], axis=0))
 
-                obs_tmp = autoencoder.predict(np.expand_dims(perturbed_data, axis=0)).astype('float32')
+                obs_tmp = autoencoder.predict(np.expand_dims(data_tmp[i], axis=0)).astype('float32')
                 obs_tmp = np.append(obs_tmp, prbs[i][0]).astype('float32')
 
                 reward_mean = np.mean(rewards[i]).astype('float32')
-                rewards_dict[profile].append(float(reward_mean))
-                time_step = generate_timestep_for_policy(obs_tmp)
-                action = drl_agents[i].action(time_step)
                 
-                # append policies to send and store policy
-                policies.append(action[0][0][0].numpy())
-                previous_policy[i] = action[0][0][0].numpy()
+                # Get clean action
+                time_step = generate_timestep_for_policy(obs_tmp)
+                clean_action = drl_agents[i].action(time_step)
+                clean_actions.append(clean_action[0][0][0].numpy())
+                
+                # Apply PPO-specific Policy Infiltration Attack
+                try:
+                    adversarial_action, attack_success, attack_metrics = apply_ppo_policy_infiltration_attack(
+                        obs_tmp, 
+                        drl_agents[i], 
+                        epsilon=epsilon_pia,
+                        alpha=alpha_pia,
+                        num_iterations=num_iterations_pia
+                    )
+                    
+                    attacked_actions.append(adversarial_action[0][0][0].numpy())
+                    
+                    # Update global PIA metrics
+                    pia_metrics['total_attacks'] += 1
+                    if attack_success:
+                        pia_metrics['successful_attacks'] += 1
+                    pia_metrics['avg_kl_divergence'] += attack_metrics['max_divergence']
+                    pia_metrics['avg_prob_ratio'] += attack_metrics['max_prob_ratio']
+                    pia_metrics['success_rate'] = pia_metrics['successful_attacks'] / max(pia_metrics['total_attacks'], 1)
+                    
+                    logging.info(f"PIA Attack Success: {attack_success}")
+                    logging.info(f"Clean Action: {clean_action[0][0][0].numpy()}")
+                    logging.info(f"Attacked Action: {adversarial_action[0][0][0].numpy()}")
+                    logging.info(f"Action Difference: {abs(float(adversarial_action[0][0][0].numpy()) - float(clean_action[0][0][0].numpy())):.6f}")
+                    
+                except Exception as e:
+                    logging.error(f"PIA Attack failed on slice {i}: {str(e)}")
+                    attacked_actions.append(clean_action[0][0][0].numpy())
+                
+                # Use attacked action if successful, else use clean action
+                if len(attacked_actions) > len(clean_actions) - 1:
+                    policies.append(attacked_actions[-1])
+                else:
+                    policies.append(clean_actions[-1])
+                
+                previous_policy[i] = policies[-1]
 
-                logging.info('Slice ' + str(i) + ': Action is ' + str(action[0][0][0].numpy()) + ' Reward is: ' + str(
-                    reward_mean))
+                logging.info(f'Slice {i}: Clean Action = {clean_action[0][0][0].numpy():.6f}, Reward = {reward_mean:.6f}')
             else:
                 # append previous policy
                 policies.append(previous_policy[i])
-                logging.info('Using previous action ' + str(previous_policy[i]) + ' for slice profile ' + str(i))
+                logging.info(f'Using previous action {previous_policy[i]:.6f} for slice profile {i}')
 
         # build message to send policies to the DU
-        msg = ','.join([str(x) for x in policies])
+        msg = ','.join([f"{x:.6f}" for x in policies])
+        logging.info('='*80)
         logging.info('Sending this message to the DU: ' + msg)
-        # with open('rewards.json', 'w') as rewards_file:
-        #     json.dump(rewards_dict, rewards_file)
-        
+        logging.info(f"Global PIA Success Rate: {pia_metrics['success_rate']*100:.2f}% ({pia_metrics['successful_attacks']}/{pia_metrics['total_attacks']})")
+        logging.info('='*80)
+
         time.sleep(10)
