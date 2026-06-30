@@ -291,51 +291,56 @@ if __name__ == '__main__':
         policies = list()
 
         # This is where data comes from the DUs.
-        # As an example, we extract data from the static dataset.
-        # Users may want to interface it with their own DUs
         data = get_data_from_DUs(dataset=dataset,
                                  n_entries=1000,
-                                 metrics_export=metric_list_to_extract).to_numpy()
+                                 metrics_export=metric_list_to_extract)
+        # ensure numpy array
+        if hasattr(data, "to_numpy"):
+            data = data.to_numpy()
+        else:
+            data = np.asarray(data)
 
         data_tmp, prbs, rewards = split_data(slice_profiles=slice_profiles,
                                              data_to_spit=data,
                                              metric_dict=metric_dict,
                                              metric_list=metric_list_for_agents,
                                              n_entries_per_slice=n_entries_for_autoencoder)
+
         epsilon = 0.01  # Initial perturbation magnitude
         max_iterations = 1000  # Maximum number of attack iterations
         alpha = 0.01  # Step size for PGD
 
-        for i, profile in enumerate(slice_profiles.keys()):  # Fix: Added enumeration
+        for i, profile in enumerate(slice_profiles.keys()):
+            # scale dl_buffer entries (if present) safely
             if len(data_tmp[i]) > 0:
-                for row in data_tmp[i]:
-                 row[0] /= 100000
+                data_tmp[i] = np.array(data_tmp[i], dtype=np.float32)
+                data_tmp[i][:, 0] /= 100000.0
 
-        # Apply the PGD attack to the observations
-            perturbed_data = apply_pgd_attack(data_tmp[i], epsilon=epsilon, num_iterations=max_iterations, alpha=alpha)
-            
-            logging.info('Testing iteration ' + str(i))
-            logging.info('Data received from DU (dl_buffer [bytes], tx_brate downlink [Mbps], ratio_granted_req): ')
-            logging.info(np.expand_dims(perturbed_data, axis=0))
+                perturbed_data = apply_pgd_attack(data_tmp[i], epsilon=epsilon,
+                                                  num_iterations=max_iterations, alpha=alpha)
 
-            obs_tmp = autoencoder.predict(np.expand_dims(perturbed_data, axis=0)).astype('float32')
-            obs_tmp = np.append(obs_tmp, prbs[i][0]).astype('float32')
+                logging.info('Testing iteration ' + str(i))
+                logging.info('Data received from DU (dl_buffer [bytes], tx_brate downlink [Mbps], ratio_granted_req): ')
+                logging.info(np.expand_dims(perturbed_data, axis=0))
 
-            reward_mean = np.mean(rewards[i]).astype('float32')
-            rewards_dict[profile].append(float(reward_mean))
-            time_step = generate_timestep_for_policy(obs_tmp)
-            action = drl_agents[i].action(time_step)
+                obs_tmp = autoencoder.predict(np.expand_dims(perturbed_data, axis=0)).astype('float32')
+                # guard prbs indexing
+                prb_val = prbs[i][0] if (len(prbs[i]) > 0) else 0.0
+                obs_tmp = np.append(obs_tmp, prb_val).astype('float32')
 
-            # append policies to send and store policy
-            policies.append(action[0][0][0].numpy())
-            previous_policy[i] = action[0][0][0].numpy()
+                reward_mean = np.mean(rewards[i]).astype('float32') if len(rewards[i]) > 0 else 0.0
+                rewards_dict[profile].append(float(reward_mean))
+                time_step = generate_timestep_for_policy(obs_tmp)
+                action = drl_agents[i].action(time_step)
 
-            logging.info('Slice ' + str(i) + ': Action is ' + str(action[0][0][0].numpy()) + ' Reward is: ' + str(
-                reward_mean))
-        else:
-            # append previous policy
-            policies.append(previous_policy[i])
-            logging.info('Using previous action ' + str(previous_policy[i]) + ' for slice profile ' + str(i))
+                policies.append(action[0][0][0].numpy())
+                previous_policy[i] = action[0][0][0].numpy()
+
+                logging.info('Slice ' + str(i) + ': Action is ' + str(action[0][0][0].numpy()) + ' Reward is: ' + str(reward_mean))
+            else:
+                # append previous policy for this slice
+                policies.append(previous_policy[i])
+                logging.info('Using previous action ' + str(previous_policy[i]) + ' for slice profile ' + str(i))
         print()
         # build message to send policies to the DU
         msg = ','.join([str(x) for x in policies])
